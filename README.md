@@ -1,7 +1,7 @@
 
 # EcoG Qt Desktop Player (PySide6)
 
-Python / Qt (PySide6) desktop replacement for your `index.html` player.
+Python / Qt (PySide6) desktop replacement for my Web player.
 
 ## Features
 - Scan folders for audio files
