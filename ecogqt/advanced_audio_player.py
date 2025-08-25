@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaMetaData
 from mutagen import File
+from mutagen.flac import FLAC
 import re
 
 class SynchronizedLyrics:
@@ -26,35 +27,28 @@ class SynchronizedLyrics:
 
     def get_embedded_lyrics(self, audio_path):
         audio = File(audio_path)
-        if audio:
-            tags = getattr(audio, 'tags', {})
-            # FLAC
-            with open(audio_path, 'rb') as f:
-                header = f.read(4)
-                # FLAC files start with 'fLaC'
-                if header == b'fLaC':
-                    if 'LYRICS' in tags:
-                        return tags['LYRICS'][0]
-                    else:
-                        return ""
-            # MP4/M4A
-            if hasattr(tags, 'get') and tags.get('//xa9lyr'):
-                return tags['//xa9lyr'][0]
-            # MP3
-            if 'USLT::eng' in tags:
-                return str(tags['USLT::eng'])
-            elif 'USLT' in tags:
-                return str(tags['USLT'])
-            elif 'USLT::\u0000\u0000\u0000' in tags:
-                return str(tags['USLT::\u0000\u0000\u0000'])
-            elif 'SYLT' in tags:
-                return str(tags['SYLT'])
-            elif 'LYRICS' in tags:
-                return str(tags['LYRICS'])
-            elif 'lyrics' in tags:
-                return str(tags['lyrics'])
-            elif 'text' in tags:
-                return str(tags['text'])
+        if audio is None:
+            return ""
+
+            # FLAC/Vorbis
+        if audio.__class__.__name__ == 'FLAC':
+            for key in audio:
+                if key.lower() in ('lyrics', 'unsyncedlyrics', 'lyric'):
+                    return audio[key][0]
+            return ""
+
+            # MP3 (ID3)
+        if hasattr(audio, 'tags') and audio.tags:
+            # USLT (unsynchronized lyrics) is the standard for ID3
+            for k in audio.tags.keys():
+                if k.startswith('USLT') or k.startswith('SYLT'):
+                    return str(audio.tags[k])
+                if k.lower() in ('lyrics', 'unsyncedlyrics', 'lyric'):
+                    return str(audio.tags[k])
+            # MP4/AAC
+        if hasattr(audio, 'tags') and hasattr(audio.tags, 'get'):
+            if audio.tags.get('\xa9lyr'):
+                return audio.tags['\xa9lyr'][0]
         return ""
 
     def parse_lyrics(self, lyrics_text):
@@ -162,7 +156,8 @@ class AudioPlayer(QWidget):
         self.title_label = QLabel("-- Title --")
         self.artist_label = QLabel("-- Artist --")
         self.album_label = QLabel("-- Album --")
-        self.date_label = QLabel("-- Date --")
+        self.year_label = QLabel("-- Year --")
+        self.codec_label = QLabel("-- Codec --")
 
         self.time_label = QPushButton("--:--"); self.time_label.setFlat(True)
         self.time_label.setCursor(Qt.PointingHandCursor)
@@ -187,7 +182,8 @@ class AudioPlayer(QWidget):
         meta_layout.addWidget(self.title_label)
         meta_layout.addWidget(self.artist_label)
         meta_layout.addWidget(self.album_label)
-        meta_layout.addWidget(self.date_label)
+        meta_layout.addWidget(self.year_label)
+        meta_layout.addWidget(self.codec_label)
         info_layout.addLayout(meta_layout)
 
         progress_layout = QHBoxLayout()
@@ -253,11 +249,54 @@ class AudioPlayer(QWidget):
     def add_files(self, files):
         for f in files:
             if os.path.isfile(f):
-                self.playlist.append(f)
+                ext = os.path.splitext(f)[1].lower()
+                if ext in ['.m3u', '.m3u8']:
+                    pl = self.load_m3u_playlist(f)
+                    self.playlist += pl
+                    for i in pl:
+                        item = QListWidgetItem(os.path.basename(i))
+                        self.playlist_widget.addItem(item)
+                elif ext == '.cue':
+                    pl = self.load_cue_playlist(f)
+                    self.playlist += pl
+                    for i in pl:
+                        item = QListWidgetItem(os.path.basename(i))
+                        self.playlist_widget.addItem(item)
+                else:
+                    self.playlist.append(f)
                 item = QListWidgetItem(os.path.basename(f))
                 self.playlist_widget.addItem(item)
         if self.current_index == -1 and self.playlist:
             self.load_track(0)
+
+    def load_m3u_playlist(self, path):
+        tracks = []
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                tracks.append(
+                    os.path.abspath(os.path.join(os.path.dirname(path), line)))
+        return tracks
+
+    def load_cue_playlist(self, path):
+        try:
+            from cueparser import CueSheet
+        except ImportError:
+            raise ImportError(
+                "cueparser module is required for parsing .cue files. Install with 'pip install cueparser'.")
+        cue = CueSheet()
+        with open(path, encoding='utf-8') as f:
+            cue.setData(f.read())
+        tracks = []
+        for file in cue.files:
+            file_path = file.name
+            if not os.path.isabs(file_path):
+                file_path = os.path.abspath(
+                    os.path.join(os.path.dirname(path), file_path))
+            tracks.append(file_path)
+        return tracks
 
     def play_selected_track(self, item):
         idx = self.playlist_widget.row(item)
@@ -272,7 +311,8 @@ class AudioPlayer(QWidget):
             self.title_label.setText(os.path.basename(path))
             self.artist_label.setText("-- Artist --")
             self.album_label.setText("-- Album --")
-            self.date_label.setText("-- Date --")
+            self.year_label.setText("-- Date --")
+            self.codec_label.setText("-- Date --")
             self.set_album_art(path)
             self.load_lyrics(path)
             self.player.play()
@@ -282,7 +322,8 @@ class AudioPlayer(QWidget):
             self.title_label.setText("No Track Loaded")
             self.artist_label.setText("--")
             self.album_label.setText("--")
-            self.date_label.setText("--")
+            self.year_label.setText("--")
+            self.codec_label.setText("--")
             self.album_art.setPixmap(QPixmap())
             self.lyrics_display.clear()
             self.lyrics_timer.stop()
@@ -386,19 +427,20 @@ class AudioPlayer(QWidget):
 
     def handle_error(self, error, error_string):
         if error != QMediaPlayer.NoError:
-            QMessageBox.critical(self, "Playback Error", error_string)
-            self.player.stop()
+            self.next_track()
+            print("Playback Error:", error_string)
 
     def update_metadata(self):
         meta = self.player.metaData()
         title = meta.stringValue(QMediaMetaData.Title) or os.path.basename(self.playlist[self.current_index])
         artist = meta.stringValue(QMediaMetaData.AlbumArtist) or meta.stringValue(QMediaMetaData.Author) or "--"
         album = meta.stringValue(QMediaMetaData.AlbumTitle) or "--"
-        creation_date = self.extract_year(meta) or "--"
+        year = self.extract_year(meta) or "--"
         self.title_label.setText('Title: ' + title)
         self.artist_label.setText('Artist: ' + artist)
         self.album_label.setText('Album: '+ album)
-        self.date_label.setText('Year: ' + creation_date)
+        self.year_label.setText('Year: ' + year)
+        self.codec_label.setText(self.extract_audio_info())
 
     @staticmethod
     def format_time(ms):
@@ -406,34 +448,54 @@ class AudioPlayer(QWidget):
         m, s = divmod(s, 60)
         return f"{m:02}:{s:02}"
 
-    @staticmethod
-    def extract_year(meta):
-        """
-        Extract the year as a string from the QMediaMetaData.Date field, if present.
-        """
-        date_val = meta.value(QMediaMetaData.Date)
-        if not date_val:
-            return None
-
-        # If it's a QDate object
-        if isinstance(date_val, QDate):
-            return str(date_val.year())
-
-        # If it's a string, try to find a 4-digit year
-        if isinstance(date_val, str):
+    def extract_year(self, meta):
+        # Try from Qt meta first (works for MP3/MP4, rarely for FLAC)
+        date_val = meta.value(QMediaMetaData.Date) if hasattr(meta,
+                                                              "value") else None
+        if date_val:
+            if isinstance(date_val, QDate):
+                return str(date_val.year())
+            if isinstance(date_val, str):
+                import re
+                match = re.search(r'\b(\d{4})\b', date_val)
+                if match:
+                    return match.group(1)
+            date_str = str(date_val)
             import re
-            match = re.search(r'\b(\d{4})\b', date_val)
+            match = re.search(r'\b(\d{4})\b', date_str)
             if match:
                 return match.group(1)
+        # If FLAC, try mutagen
+        audio_path = self.playlist[self.current_index]
+        if audio_path.lower().endswith(".flac"):
+            try:
+                audio = FLAC(audio_path)
+                for tag in ("date", "year", "year_released"):
+                    if tag in audio:
+                        return audio[tag][0][:4]
+            except Exception:
+                pass
+        return "--"
 
-        # Fallback: try converting to string and searching for a year
-        date_str = str(date_val)
-        import re
-        match = re.search(r'\b(\d{4})\b', date_str)
-        if match:
-            return match.group(1)
+    def extract_audio_info(self):
+        audio = File(self.playlist[self.current_index])
+        if not audio:
+            print("Unsupported or corrupted file.")
+            return
 
-        return None
+        # Codec
+        codec = audio.mime[0] if hasattr(audio,
+                                         'mime') and audio.mime else audio.__class__.__name__
+
+        # Sample rate and bitrate
+        sample_rate = getattr(audio.info, 'sample_rate', None)
+        bits = getattr(audio.info, 'bits_per_sample', None)
+        bitrate = getattr(audio.info, 'bitrate', None)
+        if codec == 'audio/mp3':
+            return codec + ' ' + str(sample_rate/1000) + 'kHz ' + str(round(bitrate/1000)) + 'kbps'
+        else:
+            return codec + ' ' + str(sample_rate/1000) + 'kHz/' + str(round(bits)) + 'bits  ' + str(round(bitrate/1000)) + 'kbps'
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
