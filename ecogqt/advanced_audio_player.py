@@ -1,7 +1,7 @@
 import sys
 import os
 from PySide6.QtCore import Qt, QDate, QEvent, QUrl, Slot, QTimer, QSize
-from PySide6.QtGui import QPixmap, QTextCursor
+from PySide6.QtGui import QPixmap, QTextCursor, QImage
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QSlider, QListWidget, QFileDialog, QTextEdit, QListWidgetItem, QMessageBox
@@ -126,7 +126,7 @@ class AudioPlayer(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Ultimate Media Player")
-        self.resize(650, 400)
+        self.resize(800, 600)
         self.playlist = []
         self.current_index = -1
         self.show_remaining = False
@@ -242,7 +242,7 @@ class AudioPlayer(QWidget):
     def show_playlist_menu(self, pos):
         menu = QFileDialog(self)
         menu.setFileMode(QFileDialog.ExistingFiles)
-        menu.setNameFilters(["Audio files (*.mp3 *.flac *.ogg *.wav *.m4a)", "All files (*)"])
+        menu.setNameFilters(["Audio files and playlists (*.mp3 *.flac *.ogg *.wav *.m4a, *.m3u, *.m3u8, *.cue)", "All files (*)"])
         if menu.exec():
             self.add_files(menu.selectedFiles())
 
@@ -264,8 +264,8 @@ class AudioPlayer(QWidget):
                         self.playlist_widget.addItem(item)
                 else:
                     self.playlist.append(f)
-                item = QListWidgetItem(os.path.basename(f))
-                self.playlist_widget.addItem(item)
+                    item = QListWidgetItem(os.path.basename(f))
+                    self.playlist_widget.addItem(item)
         if self.current_index == -1 and self.playlist:
             self.load_track(0)
 
@@ -281,21 +281,15 @@ class AudioPlayer(QWidget):
         return tracks
 
     def load_cue_playlist(self, path):
-        try:
-            from cueparser import CueSheet
-        except ImportError:
-            raise ImportError(
-                "cueparser module is required for parsing .cue files. Install with 'pip install cueparser'.")
-        cue = CueSheet()
-        with open(path, encoding='utf-8') as f:
-            cue.setData(f.read())
         tracks = []
-        for file in cue.files:
-            file_path = file.name
-            if not os.path.isabs(file_path):
-                file_path = os.path.abspath(
-                    os.path.join(os.path.dirname(path), file_path))
-            tracks.append(file_path)
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                if re.match('^FILE .(.*). (.*)$', line):
+                    file_path = line[6:-7]
+                    if not os.path.isabs(file_path):
+                        file_path = os.path.abspath(
+                            os.path.join(os.path.dirname(path), file_path))
+                    tracks.append(file_path)
         return tracks
 
     def play_selected_track(self, item):
@@ -346,7 +340,6 @@ class AudioPlayer(QWidget):
                     elif hasattr(audio, 'pictures') and audio.pictures:
                         img_data = audio.pictures[0].data
             if img_data:
-                from PySide6.QtGui import QImage
                 img = QImage.fromData(img_data)
                 pix = QPixmap.fromImage(img)
                 self.album_art.setPixmap(pix.scaled(self.album_art.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -421,7 +414,6 @@ class AudioPlayer(QWidget):
         self.update_time_label(self.player.position(), self.player.duration())
 
     def media_status_changed(self, status):
-        from PySide6.QtMultimedia import QMediaPlayer
         if status == QMediaPlayer.EndOfMedia:
             self.next_track()
 
@@ -456,12 +448,10 @@ class AudioPlayer(QWidget):
             if isinstance(date_val, QDate):
                 return str(date_val.year())
             if isinstance(date_val, str):
-                import re
                 match = re.search(r'\b(\d{4})\b', date_val)
                 if match:
                     return match.group(1)
             date_str = str(date_val)
-            import re
             match = re.search(r'\b(\d{4})\b', date_str)
             if match:
                 return match.group(1)
