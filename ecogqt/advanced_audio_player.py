@@ -1,10 +1,11 @@
 import sys
 import os
-from PySide6.QtCore import Qt, QDate, QEvent, QUrl, Slot, QTimer, QSize
-from PySide6.QtGui import QPixmap, QTextCursor, QImage
+from PySide6.QtCore import Qt, QDate, QEvent, QUrl, Slot, QTimer, QSize, QRect
+from PySide6.QtGui import QPixmap, QTextCursor, QImage, QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QSlider, QListWidget, QFileDialog, QTextEdit, QListWidgetItem, QMessageBox
+    QSlider, QListWidget, QFileDialog, QTextEdit, QListWidgetItem, QMessageBox,
+    QGridLayout
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaMetaData
 from mutagen import File
@@ -122,11 +123,28 @@ class LyricsDisplay(QTextEdit):
                 self.current_line_idx = -1
                 self.update_display(-1)
 
+def split_image(image_path, tile_width, tile_height):
+    image = QImage(image_path)
+    if image.isNull():
+        print("Failed to load image:", image_path)
+        return []
+
+    img_width = image.width()
+    img_height = image.height()
+    sub_images = []
+
+    for top in range(0, img_height, tile_height):
+        for left in range(0, img_width, tile_width):
+            rect = QRect(left, top, min(tile_width, img_width - left), min(tile_height, img_height - top))
+            sub_img = image.copy(rect)
+            sub_images.append(sub_img)
+    return sub_images
+
 class AudioPlayer(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Ultimate Media Player")
-        self.resize(800, 600)
+        self.resize(1200, 800)
         self.playlist = []
         self.current_index = -1
         self.show_remaining = False
@@ -151,7 +169,7 @@ class AudioPlayer(QWidget):
         self.playlist_widget.viewport().installEventFilter(self)
 
         # Controls/UI
-        self.album_art = QLabel(); self.album_art.setFixedSize(128, 128)
+        self.album_art = QLabel(); self.album_art.setFixedSize(256, 256)
         self.album_art.setScaledContents(True)
         self.title_label = QLabel("-- Title --")
         self.artist_label = QLabel("-- Artist --")
@@ -165,9 +183,26 @@ class AudioPlayer(QWidget):
         self.slider = QSlider(Qt.Horizontal); self.slider.setRange(0, 100)
         self.slider.sliderMoved.connect(self.seek_position)
 
-        self.prev_button = QPushButton("⏮")
-        self.play_button = QPushButton("⏯")
-        self.next_button = QPushButton("⏭")
+        image_path = 'static/images/buttons.jpg'
+        tile_width = 1650
+        tile_height = 1650
+        self.sub_images = split_image(image_path, tile_width, tile_height)
+
+        self.prev_button = QPushButton()
+        pixmap = QPixmap.fromImage(self.sub_images[2])
+        self.prev_button.setIcon(QIcon(pixmap))
+        self.prev_button.setIconSize(QSize(50, 50))
+        self.prev_button.setFixedSize(QSize(50, 50))
+        self.play_button = QPushButton()
+        pixmap = QPixmap.fromImage(self.sub_images[0])
+        self.play_button.setIcon(QIcon(pixmap))
+        self.play_button.setIconSize(QSize(50, 50))
+        self.play_button.setFixedSize(QSize(50, 50))
+        self.next_button = QPushButton()
+        pixmap = QPixmap.fromImage(self.sub_images[3])
+        self.next_button.setIcon(QIcon(pixmap))
+        self.next_button.setIconSize(QSize(50, 50))
+        self.next_button.setFixedSize(QSize(50, 50))
         self.prev_button.clicked.connect(self.prev_track)
         self.play_button.clicked.connect(self.toggle_play_pause)
         self.next_button.clicked.connect(self.next_track)
@@ -379,9 +414,11 @@ class AudioPlayer(QWidget):
 
     def update_play_button(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
-            self.play_button.setText("⏸")
+            pixmap = QPixmap.fromImage(self.sub_images[1])
+            self.play_button.setIcon(QIcon(pixmap))
         else:
-            self.play_button.setText("▶")
+            pixmap = QPixmap.fromImage(self.sub_images[0])
+            self.play_button.setIcon(QIcon(pixmap))
 
     def update_slider(self, position):
         duration = self.player.duration()
