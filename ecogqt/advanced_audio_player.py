@@ -5,7 +5,7 @@ from PySide6.QtGui import QPixmap, QTextCursor, QImage, QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QSlider, QListWidget, QFileDialog, QTextEdit, QListWidgetItem, QMessageBox,
-    QGridLayout
+    QGridLayout, QComboBox, QSpinBox, QFormLayout, QGroupBox
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaMetaData
 from mutagen import File
@@ -153,10 +153,20 @@ class AudioPlayer(QWidget):
         self.lyrics_timer.setInterval(200)
         self.lyrics_timer.timeout.connect(self.update_lyrics_display)
 
+        # Mixing/transition config
+        self.mix_method = "Fade"  # "Fade" or "Cue"
+        self.transition_duration = 4  # seconds
+
         # Audio/Player
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
+        self.audio_output.setVolume(1.0)  # or any value between 0.0 (mute) to 1.0 (full volume)
         self.player.setAudioOutput(self.audio_output)
+        self.next_player = None  # For mixing with next track
+        self.next_output = None
+
+        # Silence elimination config
+        self.skip_silence = True  # Optionally configurable
 
         # Playlist browser
         self.playlist_widget = QListWidget()
@@ -210,6 +220,30 @@ class AudioPlayer(QWidget):
         # Lyrics
         self.lyrics_display = LyricsDisplay(); self.lyrics_display.setReadOnly(True)
 
+        # Mixing Controls UI
+        self.mix_method_combo = QComboBox()
+        self.mix_method_combo.addItems(["Fade", "Cue"])
+        self.mix_method_combo.setCurrentText(self.mix_method)
+        self.mix_method_combo.currentTextChanged.connect(self.set_mix_method)
+
+        self.transition_spin = QSpinBox()
+        self.transition_spin.setRange(1, 10)
+        self.transition_spin.setValue(self.transition_duration)
+        self.transition_spin.setSuffix(" s")
+        self.transition_spin.valueChanged.connect(self.set_transition_duration)
+
+        self.silence_check = QPushButton("Skip Silence")
+        self.silence_check.setCheckable(True)
+        self.silence_check.setChecked(self.skip_silence)
+        self.silence_check.toggled.connect(self.set_skip_silence)
+
+        mix_form = QFormLayout()
+        mix_form.addRow("Mix Method:", self.mix_method_combo)
+        mix_form.addRow("Transition:", self.transition_spin)
+        mix_form.addRow(self.silence_check)
+        mix_group = QGroupBox("Mixing Options")
+        mix_group.setLayout(mix_form)
+
         # Layout
         info_layout = QHBoxLayout()
         info_layout.addWidget(self.album_art)
@@ -235,6 +269,7 @@ class AudioPlayer(QWidget):
         left_layout.addLayout(progress_layout)
         left_layout.addLayout(controls_layout)
         left_layout.addWidget(self.lyrics_display)
+        left_layout.addWidget(mix_group)
 
         main_layout = QHBoxLayout(self)
         main_layout.addWidget(self.playlist_widget, 1)
@@ -251,6 +286,9 @@ class AudioPlayer(QWidget):
         self.player.metaDataChanged.connect(self.update_metadata)
         self.player.errorOccurred.connect(self.handle_error)
 
+        # For mixing (transition to next track)
+        self.player.positionChanged.connect(self.check_for_mix_transition)
+
         # Menu (open files)
         self.playlist_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.playlist_widget.customContextMenuRequested.connect(self.show_playlist_menu)
@@ -258,6 +296,137 @@ class AudioPlayer(QWidget):
         # Init
         self.update_play_button()
         self.show()
+
+    # --- Mixing/transition config slots ---
+    def set_mix_method(self, method):
+        self.mix_method = method
+
+    def set_transition_duration(self, val):
+        self.transition_duration = val
+
+    def set_skip_silence(self, val):
+        self.skip_silence = val
+
+    # --- Mixing logic ---
+    def check_for_mix_transition(self, position):
+        """Trigger mix/cue if current track is close to ending."""
+        duration = self.player.duration()
+        if duration <= 0 or self.current_index >= len(self.playlist) - 1:
+            return
+
+        # If fade/cue not yet started, and we're within transition_duration
+        if duration - position <= self.transition_duration * 1000:
+            if not hasattr(self, "_mixing_next") or not self._mixing_next:
+                self._mixing_next = True
+                if self.mix_method == "Fade":
+                    self.start_fade_to_next()
+                else:
+                    self.cue_next_track()
+        else:
+            self._mixing_next = False
+
+    def start_fade_to_next(self):
+        """Fade out current track and fade in next track."""
+        next_idx = self.current_index + 1
+        if not (0 <= next_idx < len(self.playlist)):
+            return
+        next_path = self.playlist[next_idx]
+        # Prepare second player
+        self.next_player = QMediaPlayer(self)
+        self.next_output = QAudioOutput(self)
+        self.next_player.setAudioOutput(self.next_output)
+        self.next_player.setSource(QUrl.fromLocalFile(next_path))
+        self.next_output.setVolume(0)
+        self.next_player.play()
+
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setInterval(100)
+        fade_steps = int(self.transition_duration * 1000 / 100)
+        self._fade_step = 0
+
+        def fade():
+            self._fade_step += 1
+            frac = self._fade_step / fade_steps
+            self.audio_output.setVolume(max(0, 1.0 - frac))
+            self.next_output.setVolume(min(1.0, frac))
+            if self._fade_step >= fade_steps:
+                self.fade_timer.stop()
+                self.audio_output.setVolume(1.0)
+                self.player.stop()
+                # Switch to next player
+                self.player = self.next_player
+                self.audio_output = self.next_output
+                self.current_index = next_idx
+                self.load_track(self.current_index, auto_play=False, skip_mix_check=True)
+                self.player.play()
+                self.player.positionChanged.connect(self.update_slider)
+                self.player.durationChanged.connect(self.update_duration)
+                self.player.mediaStatusChanged.connect(self.media_status_changed)
+                self.player.playbackStateChanged.connect(self.update_play_button)
+                self.player.metaDataChanged.connect(self.update_metadata)
+                self.player.errorOccurred.connect(self.handle_error)
+                self.player.positionChanged.connect(self.check_for_mix_transition)
+                self.next_player = None
+                self.next_output = None
+                self._mixing_next = False
+
+        self.fade_timer.timeout.connect(fade)
+        self.fade_timer.start()
+
+    def cue_next_track(self):
+        """Cue next track directly at transition point, skipping silence if enabled."""
+        next_idx = self.current_index + 1
+        if not (0 <= next_idx < len(self.playlist)):
+            return
+        # Jump to next track, optionally skip silence at start
+        self.load_track(next_idx, skip_silence=self.skip_silence)
+
+    # Slightly changed signature to support mixing
+    def load_track(self, idx, auto_play=True, skip_mix_check=False,
+                   skip_silence=False):
+        if 0 <= idx < len(self.playlist):
+            path = self.playlist[idx]
+            self.current_index = idx
+            self.player.setSource(QUrl.fromLocalFile(path))
+            self.slider.setValue(0)
+            self.title_label.setText(os.path.basename(path))
+            self.artist_label.setText("-- Artist --")
+            self.album_label.setText("-- Album --")
+            self.year_label.setText("-- Date --")
+            self.codec_label.setText("-- Date --")
+            self.set_album_art(path)
+            self.load_lyrics(path)
+            if auto_play:
+                self.player.play()
+            self.lyrics_timer.start()
+            self.playlist_widget.setCurrentRow(idx)
+            # Optionally skip silence at start (very basic, see note below)
+            if skip_silence:
+                QTimer.singleShot(500, self.skip_leading_silence)
+            # Reset mix triggers unless skip_mix_check (for fade handover)
+            if not skip_mix_check:
+                self._mixing_next = False
+        else:
+            self.title_label.setText("No Track Loaded")
+            self.artist_label.setText("--")
+            self.album_label.setText("--")
+            self.year_label.setText("--")
+            self.codec_label.setText("--")
+            self.album_art.setPixmap(QPixmap())
+            self.lyrics_display.clear()
+            self.lyrics_timer.stop()
+
+    def skip_leading_silence(self):
+        """A very basic silence-skip: jump forward if amplitude is zero (needs real audio analysis for best results)."""
+        # QMediaPlayer does NOT support sample-level analysis.
+        # A real solution would use something like pydub or ffmpeg to find silence start/end.
+        # Here, we just jump ahead 1s, up to 4 times, if still at start.
+        max_tries = 4
+        for i in range(max_tries):
+            if self.player.position() < 1500:
+                self.player.setPosition(self.player.position() + 1000)
+            else:
+                break
 
     # Drag-and-drop support
     def dragEnterEvent(self, event):
@@ -277,7 +446,7 @@ class AudioPlayer(QWidget):
     def show_playlist_menu(self, pos):
         menu = QFileDialog(self)
         menu.setFileMode(QFileDialog.ExistingFiles)
-        menu.setNameFilters(["Audio files and playlists (*.mp3 *.flac *.ogg *.wav *.m4a, *.m3u, *.m3u8, *.cue)", "All files (*)"])
+        menu.setNameFilters(["Playlists (*.m3u *.m3u8 *.cue)", "Audio files (*.mp3 *.flac *.ogg *.wav *.m4a)", "All files (*)"])
         if menu.exec():
             self.add_files(menu.selectedFiles())
 
@@ -331,31 +500,6 @@ class AudioPlayer(QWidget):
         idx = self.playlist_widget.row(item)
         self.load_track(idx)
 
-    def load_track(self, idx):
-        if 0 <= idx < len(self.playlist):
-            path = self.playlist[idx]
-            self.current_index = idx
-            self.player.setSource(QUrl.fromLocalFile(path))
-            self.slider.setValue(0)
-            self.title_label.setText(os.path.basename(path))
-            self.artist_label.setText("-- Artist --")
-            self.album_label.setText("-- Album --")
-            self.year_label.setText("-- Date --")
-            self.codec_label.setText("-- Date --")
-            self.set_album_art(path)
-            self.load_lyrics(path)
-            self.player.play()
-            self.lyrics_timer.start()
-            self.playlist_widget.setCurrentRow(idx)
-        else:
-            self.title_label.setText("No Track Loaded")
-            self.artist_label.setText("--")
-            self.album_label.setText("--")
-            self.year_label.setText("--")
-            self.codec_label.setText("--")
-            self.album_art.setPixmap(QPixmap())
-            self.lyrics_display.clear()
-            self.lyrics_timer.stop()
 
     def set_album_art(self, path):
         # Use mutagen to extract artwork robustly
@@ -382,7 +526,7 @@ class AudioPlayer(QWidget):
         except Exception as e:
             print("Artwork extraction error:", e)
         # Fallback
-        self.album_art.setPixmap(QPixmap("default_album_art.png") if os.path.exists("default_album_art.png") else QPixmap())
+        self.album_art.setPixmap(QPixmap("static/images/default_album_art.png") if os.path.exists("static/images/default_album_art.png") else QPixmap())
 
     def load_lyrics(self, audio_path):
         self.lyrics = SynchronizedLyrics(audio_path)
@@ -452,6 +596,9 @@ class AudioPlayer(QWidget):
 
     def media_status_changed(self, status):
         if status == QMediaPlayer.EndOfMedia:
+            # If mixing/cue-in is active, do not trigger next_track (already handled)
+            if hasattr(self, "_mixing_next") and self._mixing_next:
+                return
             self.next_track()
 
     def handle_error(self, error, error_string):
