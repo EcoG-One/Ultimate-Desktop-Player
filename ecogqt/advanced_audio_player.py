@@ -168,10 +168,15 @@ class AudioPlayer(QWidget):
         # Silence elimination config
         self.skip_silence = True  # Optionally configurable
 
-        # Playlist browser
+        # Playlist browser with context menu support
         self.playlist_widget = QListWidget()
+        self.playlist_label = QLabel("Playlist")
         self.playlist_widget.setDragDropMode(QListWidget.InternalMove)
-        self.playlist_widget.itemDoubleClicked.connect(self.play_selected_track)
+        self.playlist_widget.itemDoubleClicked.connect(
+            self.play_selected_track)
+        self.playlist_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.playlist_widget.customContextMenuRequested.connect(
+            self.show_playlist_context_menu)
 
         # Drag-and-drop support
         self.setAcceptDrops(True)
@@ -191,7 +196,10 @@ class AudioPlayer(QWidget):
         self.time_label.setCursor(Qt.PointingHandCursor)
         self.time_label.clicked.connect(self.toggle_time_display)
         self.slider = QSlider(Qt.Horizontal); self.slider.setRange(0, 100)
-        self.slider.sliderMoved.connect(self.seek_position)
+      #  self.slider.sliderMoved.connect(self.seek_position) replaced by slider released
+        self.slider.sliderMoved.connect(self.on_slider_moved)
+        self.slider.sliderReleased.connect(self.on_slider_released)
+        self._slider_moving = False
 
         image_path = 'static/images/buttons.jpg'
         tile_width = 1650
@@ -271,8 +279,11 @@ class AudioPlayer(QWidget):
         left_layout.addWidget(self.lyrics_display)
         left_layout.addWidget(mix_group)
 
+        playlist_layout = QVBoxLayout()
+        playlist_layout.addWidget(self.playlist_label)
+        playlist_layout.addWidget(self.playlist_widget)
         main_layout = QHBoxLayout(self)
-        main_layout.addWidget(self.playlist_widget, 1)
+        main_layout.addLayout(playlist_layout, 1)
         main_layout.addLayout(left_layout, 2)
         self.setLayout(main_layout)
 
@@ -500,6 +511,36 @@ class AudioPlayer(QWidget):
         idx = self.playlist_widget.row(item)
         self.load_track(idx)
 
+    def show_playlist_context_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self.playlist_widget)
+        remove_action = menu.addAction("Remove Selected")
+        clear_action = menu.addAction("Clear Playlist")
+        action = menu.exec(self.playlist_widget.mapToGlobal(pos))
+        if action == remove_action:
+            self.remove_selected_item()
+        elif action == clear_action:
+            self.clear_playlist()
+
+    def remove_selected_item(self):
+        row = self.playlist_widget.currentRow()
+        if row >= 0:
+            self.playlist_widget.takeItem(row)
+            del self.playlist[row]
+            # Adjust current_index if necessary
+            if row == self.current_index:
+                self.player.stop()
+                self.current_index = -1
+                self.lyrics_display.clear()
+            elif row < self.current_index:
+                self.current_index -= 1
+
+    def clear_playlist(self):
+        self.playlist_widget.clear()
+        self.playlist.clear()
+        self.player.stop()
+        self.current_index = -1
+        self.lyrics_display.clear()
 
     def set_album_art(self, path):
         # Use mutagen to extract artwork robustly
@@ -573,15 +614,27 @@ class AudioPlayer(QWidget):
             self.slider.blockSignals(False)
         self.update_time_label(position, duration)
 
+    def on_slider_moved(self, value):
+        self._slider_moving = True  # Mark that user is dragging
+
+    def on_slider_released(self):
+        if self._slider_moving:
+            duration = self.player.duration()
+            value = self.slider.value()
+            if duration > 0:
+                new_position = int((value / 100) * duration)
+                self.player.setPosition(new_position)
+        self._slider_moving = False
+
     def update_duration(self, duration):
         self.slider.setEnabled(duration > 0)
         self.update_time_label(self.player.position(), duration)
 
-    def seek_position(self, value):
+    """    def seek_position(self, value):
         duration = self.player.duration()
         if duration > 0:
             new_position = int((value / 100) * duration)
-            self.player.setPosition(new_position)
+            self.player.setPosition(new_position) """
 
     def update_time_label(self, position, duration):
         if self.show_remaining:
