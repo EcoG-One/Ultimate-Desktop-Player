@@ -451,6 +451,7 @@ class AudioPlayer(QWidget):
             # Reset mix triggers unless skip_mix_check (for fade handover)
             if not skip_mix_check:
                 self._mixing_next = False
+            self.update_play_button()
         else:
             self.title_label.setText("No Track Loaded")
             self.artist_label.setText("--")
@@ -460,6 +461,7 @@ class AudioPlayer(QWidget):
             self.album_art.setPixmap(QPixmap())
             self.lyrics_display.clear()
             self.lyrics_timer.stop()
+            self.update_play_button()
 
     def skip_leading_silence(self):
         """A very basic silence-skip: jump forward if amplitude is zero (needs real audio analysis for best results)."""
@@ -569,6 +571,7 @@ class AudioPlayer(QWidget):
                 self.player.stop()
                 self.current_index = -1
                 self.lyrics_display.clear()
+                self.update_play_button()
             elif row < self.current_index:
                 self.current_index -= 1
 
@@ -578,6 +581,7 @@ class AudioPlayer(QWidget):
         self.player.stop()
         self.current_index = -1
         self.lyrics_display.clear()
+        self.update_play_button()
 
     def set_album_art(self, path):
         # Use mutagen to extract artwork robustly
@@ -698,6 +702,7 @@ class AudioPlayer(QWidget):
         if error != QMediaPlayer.NoError:
             self.next_track()
             print("Playback Error:", error_string)
+            self.update_play_button()
 
     def update_metadata(self):
         meta = self.player.metaData()
