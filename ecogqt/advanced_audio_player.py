@@ -154,7 +154,7 @@ class AudioPlayer(QWidget):
         self.lyrics_timer.timeout.connect(self.update_lyrics_display)
 
         # Mixing/transition config
-        self.mix_method = "Fade"  # "Fade" or "Cue"
+        self.mix_method = "Fade"  # Default
         self.transition_duration = 4  # seconds
 
         # Audio/Player
@@ -229,8 +229,9 @@ class AudioPlayer(QWidget):
         self.lyrics_display = LyricsDisplay(); self.lyrics_display.setReadOnly(True)
 
         # Mixing Controls UI
+        self.crossfade_modes = ["Fade", "Smooth", "Full", "Scratch", "Cue"]
         self.mix_method_combo = QComboBox()
-        self.mix_method_combo.addItems(["Fade", "Cue"])
+        self.mix_method_combo.addItems(self.crossfade_modes)
         self.mix_method_combo.setCurrentText(self.mix_method)
         self.mix_method_combo.currentTextChanged.connect(self.set_mix_method)
 
@@ -321,24 +322,29 @@ class AudioPlayer(QWidget):
         if duration <= 0 or self.current_index >= len(self.playlist) - 1:
             return
 
-        # If fade/cue not yet started, and we're within transition_duration
         if duration - position <= self.transition_duration * 1000:
             if not hasattr(self, "_mixing_next") or not self._mixing_next:
                 self._mixing_next = True
+                # Dispatch to correct crossfade mode
                 if self.mix_method == "Fade":
-                    self.start_fade_to_next()
+                    self.start_fade_to_next(mode="fade")
+                elif self.mix_method == "Smooth":
+                    self.start_fade_to_next(mode="smooth")
+                elif self.mix_method == "Full":
+                    self.start_fade_to_next(mode="full")
+                elif self.mix_method == "Scratch":
+                    self.start_fade_to_next(mode="scratch")
                 else:
                     self.cue_next_track()
         else:
             self._mixing_next = False
 
-    def start_fade_to_next(self):
-        """Fade out current track and fade in next track."""
+    def start_fade_to_next(self, mode="fade"):
+        """Perform the selected crossfade mode when transitioning."""
         next_idx = self.current_index + 1
         if not (0 <= next_idx < len(self.playlist)):
             return
         next_path = self.playlist[next_idx]
-        # Prepare second player
         self.next_player = QMediaPlayer(self)
         self.next_output = QAudioOutput(self)
         self.next_player.setAudioOutput(self.next_output)
@@ -354,8 +360,37 @@ class AudioPlayer(QWidget):
         def fade():
             self._fade_step += 1
             frac = self._fade_step / fade_steps
-            self.audio_output.setVolume(max(0, 1.0 - frac))
-            self.next_output.setVolume(min(1.0, frac))
+
+            if mode == "fade":
+                # Linear fade out/in
+                self.audio_output.setVolume(max(0, 1.0 - frac))
+                self.next_output.setVolume(min(1.0, frac))
+            elif mode == "smooth":
+                # S-curve fade for less abrupt transitions
+                import math
+                curve = (1 - math.cos(frac * math.pi)) / 2  # S-curve 0...1
+                self.audio_output.setVolume(max(0, 1.0 - curve))
+                self.next_output.setVolume(min(1.0, curve))
+            elif mode == "full":
+                # Next track starts at full volume, old fades out
+                self.audio_output.setVolume(max(0, 1.0 - frac))
+                self.next_output.setVolume(1.0)
+            elif mode == "scratch":
+                # Simulate a DJ "scratch" by jumping next track to a cue point and hard-cutting
+                # (For demo: jump to 1s in, quick fade, then cut)
+                if self._fade_step == 1:
+                    self.next_player.setPosition(1000)  # start 1s in
+                if frac < 0.5:
+                    self.audio_output.setVolume(max(0, 1.0 - 2*frac))
+                    self.next_output.setVolume(0.0)
+                else:
+                    self.audio_output.setVolume(0.0)
+                    self.next_output.setVolume(1.0)
+            else:
+                # Default to fade
+                self.audio_output.setVolume(max(0, 1.0 - frac))
+                self.next_output.setVolume(min(1.0, frac))
+
             if self._fade_step >= fade_steps:
                 self.fade_timer.stop()
                 self.audio_output.setVolume(1.0)
@@ -364,8 +399,8 @@ class AudioPlayer(QWidget):
                 self.player = self.next_player
                 self.audio_output = self.next_output
                 self.current_index = next_idx
-                self.load_track(self.current_index, auto_play=False, skip_mix_check=True)
-                self.player.play()
+            #    self.load_track(self.current_index, auto_play=False, skip_mix_check=True)
+            #    self.player.play()
                 self.player.positionChanged.connect(self.update_slider)
                 self.player.durationChanged.connect(self.update_duration)
                 self.player.mediaStatusChanged.connect(self.media_status_changed)
@@ -381,12 +416,15 @@ class AudioPlayer(QWidget):
         self.fade_timer.start()
 
     def cue_next_track(self):
-        """Cue next track directly at transition point, skipping silence if enabled."""
+        """
+        Schedule the next track to play after the current one finishes,
+        without interrupting current playback.
+        """
         next_idx = self.current_index + 1
         if not (0 <= next_idx < len(self.playlist)):
             return
-        # Jump to next track, optionally skip silence at start
-        self.load_track(next_idx, skip_silence=self.skip_silence)
+        # Set a flag to cue the next track at end of media
+        self._cue_next = next_idx
 
     # Slightly changed signature to support mixing
     def load_track(self, idx, auto_play=True, skip_mix_check=False,
@@ -648,10 +686,13 @@ class AudioPlayer(QWidget):
 
     def media_status_changed(self, status):
         if status == QMediaPlayer.EndOfMedia:
-            # If mixing/cue-in is active, do not trigger next_track (already handled)
-            if hasattr(self, "_mixing_next") and self._mixing_next:
-                return
-            self.next_track()
+            # If a cue_next was scheduled, play that track
+            if hasattr(self, '_cue_next') and self._cue_next is not None:
+                next_idx = self._cue_next
+                self._cue_next = None
+                self.load_track(next_idx)
+            else:
+                self.next_track()
 
     def handle_error(self, error, error_string):
         if error != QMediaPlayer.NoError:
