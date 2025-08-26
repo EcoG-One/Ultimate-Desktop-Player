@@ -300,10 +300,6 @@ class AudioPlayer(QWidget):
         # For mixing (transition to next track)
         self.player.positionChanged.connect(self.check_for_mix_transition)
 
-        # Menu (open files)
-        self.playlist_widget.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.playlist_widget.customContextMenuRequested.connect(self.show_playlist_menu)
-
         # Init
         self.update_play_button()
         self.show()
@@ -454,7 +450,7 @@ class AudioPlayer(QWidget):
             return True
         return super().eventFilter(source, event)
 
-    def show_playlist_menu(self, pos):
+    def show_playlist_menu(self, pos=None):
         menu = QFileDialog(self)
         menu.setFileMode(QFileDialog.ExistingFiles)
         menu.setNameFilters(["Playlists (*.m3u *.m3u8 *.cue)", "Audio files (*.mp3 *.flac *.ogg *.wav *.m4a)", "All files (*)"])
@@ -514,10 +510,13 @@ class AudioPlayer(QWidget):
     def show_playlist_context_menu(self, pos):
         from PySide6.QtWidgets import QMenu
         menu = QMenu(self.playlist_widget)
+        add_action = menu.addAction("Add Files")
         remove_action = menu.addAction("Remove Selected")
         clear_action = menu.addAction("Clear Playlist")
         action = menu.exec(self.playlist_widget.mapToGlobal(pos))
-        if action == remove_action:
+        if action == add_action:
+            self.show_playlist_menu(pos)
+        elif action == remove_action:
             self.remove_selected_item()
         elif action == clear_action:
             self.clear_playlist()
@@ -630,11 +629,11 @@ class AudioPlayer(QWidget):
         self.slider.setEnabled(duration > 0)
         self.update_time_label(self.player.position(), duration)
 
-    """    def seek_position(self, value):
+    def seek_position(self, value):
         duration = self.player.duration()
         if duration > 0:
             new_position = int((value / 100) * duration)
-            self.player.setPosition(new_position) """
+            self.player.setPosition(new_position)
 
     def update_time_label(self, position, duration):
         if self.show_remaining:
