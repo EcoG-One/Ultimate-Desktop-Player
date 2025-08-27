@@ -401,6 +401,7 @@ class AudioPlayer(QWidget):
                 self.current_index = next_idx
             #    self.load_track(self.current_index, auto_play=False, skip_mix_check=True)
             #    self.player.play()
+                self.update_play_button()
                 self.player.positionChanged.connect(self.update_slider)
                 self.player.durationChanged.connect(self.update_duration)
                 self.player.mediaStatusChanged.connect(self.media_status_changed)
@@ -426,7 +427,6 @@ class AudioPlayer(QWidget):
         # Set a flag to cue the next track at end of media
         self._cue_next = next_idx
 
-    # Slightly changed signature to support mixing
     def load_track(self, idx, auto_play=True, skip_mix_check=False,
                    skip_silence=False):
         if 0 <= idx < len(self.playlist):
@@ -641,10 +641,9 @@ class AudioPlayer(QWidget):
     def update_play_button(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             pixmap = QPixmap.fromImage(self.sub_images[1])
-            self.play_button.setIcon(QIcon(pixmap))
         else:
             pixmap = QPixmap.fromImage(self.sub_images[0])
-            self.play_button.setIcon(QIcon(pixmap))
+        self.play_button.setIcon(QIcon(pixmap))
 
     def update_slider(self, position):
         duration = self.player.duration()
